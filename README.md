@@ -2,6 +2,7 @@
 Atmosphere2:Atmosphereのクラスタ数の２倍でクラスタリングした結果 <br>
 Dataset:vgDataset全体 <br>
 データ制限:4/4拍子、拍子変化なし <br>
+
 config:     dataset_name="ver1", #保存先ディレクトリ <br>
             datasetSource_path='vgDataset', #学習データセットディレクトリ <br>
             IsAtmosphere=True, #Atmosphereトークンを付けるか <br>
