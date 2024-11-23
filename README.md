@@ -2,7 +2,7 @@
 〇ver1との変更点 <br>
 Atmosphere.py:音圧(librosa.rms)の平均値でクラスタ値をソート <br>
 
-〇その他設定
+〇その他設定 <br>
 Atmosphere2:Atmosphereのクラスタ数の２倍でクラスタリングした結果 <br>
 Dataset:vgDataset全体 <br>
 データ制限:4/4拍子、拍子変化なし <br>
