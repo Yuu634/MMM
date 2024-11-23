@@ -1,4 +1,5 @@
 # MMM
+Atmosphere.py:音圧(librosa.rms)の平均値でクラスタ値をソート <br>
 Atmosphere2:Atmosphereのクラスタ数の２倍でクラスタリングした結果 <br>
 Dataset:vgDataset全体 <br>
 データ制限:4/4拍子、拍子変化なし <br>
