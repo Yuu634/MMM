@@ -109,79 +109,110 @@ class DatasetCreator:
         logger.info(f"Saved tokenizer to {tokenizer_path}.")
         
         #データ分割（小モデル学習用）
-        self.Separate_token(dataset_path,token_sequences_train,token_sequences_valid)
+        self.Separate_token(
+            dataset_path,
+            token_sequences_train,
+            token_sequences_valid,
+            len(self.config.transpositions_train)
+        )
 
 
-    def Separate_token(self,dataset_path,train_sequences,valid_sequences):
-        #source_trainfile = os.path.join(dataset_path,"token_sequences_train.txt")
-        #source_validfile = os.path.join(dataset_path,"token_sequences_valid.txt")
+    def Separate_token(self,dataset_path,train_sequences,valid_sequences,transposition_size):
         Atmosphere_dir = os.path.join(dataset_path,'AtmosphereModel')
         Bar_dir = os.path.join(dataset_path,'BarModel')
         
         os.makedirs(Atmosphere_dir, exist_ok=True)
         os.makedirs(Bar_dir, exist_ok=True)
         
-        #Atmosphere/Atmosphere2トークンのみのシーケンス作成
+        """Atmosphere/Atmosphere2トークンのみのシーケンス作成"""
         Atmosphere_sequences = []
         for song_sequence in train_sequences:
             list = []
-            for token in song_sequence:
-                if token.startswith("Atmosphere"):
-                    list.append(token)
+            start_index = song_sequence.index("PIECE_START")
+            for i in range(start_index):
+                if song_sequence[i].startswith("Atmosphere"):
+                    list.append(song_sequence[i])
             Atmosphere_sequences.append(list)
-        path = os.path.join(Atmosphere_dir,"token_sequences_train.txt")
-        with open(path, "w") as file:
+        train_path = os.path.join(Atmosphere_dir,"token_sequences_train.txt")
+        with open(train_path, "w") as file:
             for Atmosphere_sequence in Atmosphere_sequences:
                 print(" ".join(Atmosphere_sequence), file=file)
                 
         Atmosphere_sequences = []
         for song_sequence in valid_sequences:
             list = []
-            for token in song_sequence:
-                if token.startswith("Atmosphere"):
-                    list.append(token)
+            start_index = song_sequence.index("PIECE_START")
+            for i in range(start_index):
+                if song_sequence[i].startswith("Atmosphere"):
+                    list.append(song_sequence[i])
             Atmosphere_sequences.append(list)
-        path = os.path.join(Atmosphere_dir,"token_sequences_valid.txt")
-        with open(path, "w") as file:
+        valid_path = os.path.join(Atmosphere_dir,"token_sequences_valid.txt")
+        with open(valid_path, "w") as file:
             for Atmosphere_sequence in Atmosphere_sequences:
                 print(" ".join(Atmosphere_sequence), file=file)
+                
+        #トークナイズ生成
+        tokenizer = self.__create_tokenizer([train_path, valid_path])
+        tokenizer_path = os.path.join(Atmosphere_dir, "tokenizer.json")
+        tokenizer.save(tokenizer_path)
+        logger.info(f"Saved tokenizer to {tokenizer_path}.")
         
             
-        #2小節に分割したシーケンス作成
-        #NEXTBARで分割
+        """2小節に分割したシーケンス作成
+        NEXTBARで分割"""
         Bar_sequences = []
         list = []
         for song_sequence in train_sequences:
-            start = song_sequence.index("PIECE_START")
-            for i in range(start,len(song_sequence)):
+            bar_num = 0
+            start_index = song_sequence.index("PIECE_START")
+            list.append("BarCount=0")
+            for i in range(start_index,len(song_sequence)-1):
                 token = song_sequence[i]
+                #トークン改行時
                 if token == "NEXTBAR":
                     Bar_sequences.append(list)
                     list = []
+                    #楽曲終了時
+                    if song_sequence[i+1] == "PIECE_END":
+                        break
+                    bar_num += 1
+                    list.append("BarCount=" + str(bar_num//transposition_size))
                 else:
                     list.append(token)
-        path = os.path.join(Bar_dir,"token_sequences_train.txt")
-        with open(path, "w") as file:
+        train_path = os.path.join(Bar_dir,"token_sequences_train.txt")
+        with open(train_path, "w") as file:
             for Bar_sequence in Bar_sequences:
                 print(" ".join(Bar_sequence), file=file)
                 
         Bar_sequences = []
         list = []
         for song_sequence in valid_sequences:
-            start = song_sequence.index("PIECE_START")
-            for i in range(start,len(song_sequence)):
+            bar_num = 0
+            start_index = song_sequence.index("PIECE_START")
+            list.append("BarCount=0")
+            for i in range(start_index,len(song_sequence)-1):
                 token = song_sequence[i]
+                #トークン改行時
                 if token == "NEXTBAR":
                     Bar_sequences.append(list)
                     list = []
+                    #楽曲終了時
+                    if song_sequence[i+1] == "PIECE_END":
+                        break
+                    bar_num += 1
+                    list.append("BarCount=" + str(bar_num))
                 else:
                     list.append(token)
-        path = os.path.join(Bar_dir,"token_sequences_valid.txt")
-        with open(path, "w") as file:
+        valid_path = os.path.join(Bar_dir,"token_sequences_valid.txt")
+        with open(valid_path, "w") as file:
             for Bar_sequence in Bar_sequences:
                 print(" ".join(Bar_sequence), file=file)
         
         #トークナイズ生成
+        tokenizer = self.__create_tokenizer([train_path, valid_path])
+        tokenizer_path = os.path.join(Bar_dir, "tokenizer.json")
+        tokenizer.save(tokenizer_path)
+        logger.info(f"Saved tokenizer to {tokenizer_path}.")
             
     
     def __save_token_sequences(self, token_sequences, path):

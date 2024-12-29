@@ -19,22 +19,150 @@ import numpy as np
 import random
 import collections
 import torch
+from torch import nn
 from typing import Dict
 from torch.utils.data.dataset import Dataset
 from tokenizers import Tokenizer
 from transformers import DataCollatorWithPadding
-from transformers import Trainer, TrainingArguments
-from transformers import GPT2Config, GPT2LMHeadModel
+from transformers import Trainer, TrainingArguments, TrainerCallback
+from transformers import GPT2Config, GPT2LMHeadModel, LEDForConditionalGeneration, LEDConfig
 from transformers import PreTrainedTokenizerFast
+from transformers.models.gpt2.modeling_gpt2 import GPT2Attention
 from tqdm import tqdm
 from source.mmmtrainerconfig import MMMTrainerBaseConfig
 from source import logging
+from torch.cuda.amp import autocast
 
 logger = logging.create_logger("mmmtrainer")
 
+class GradientAndLossCallback(TrainerCallback):
+    def __init__(self, output_dir="training/logs", gradient_file="gradients.txt", loss_file="losses.txt"):
+        self.gradient_file = os.path.join(output_dir, gradient_file)
+        self.loss_file = os.path.join(output_dir, loss_file)
 
+    #def on_step_end(self, args, state, control, model, **kwargs):
+    def on_evaluate(self, args, state, control, model, **kwargs):
+        # 損失を記録
+        if state.log_history:
+            # 損失があるログを逆順にチェックして取得
+            latest_loss_log = next((log for log in reversed(state.log_history) if "loss" in log), None)
+            # 損失があるログが見つかった場合にファイルに書き込む
+            if latest_loss_log:
+                with open(self.loss_file, "a") as loss_file:
+                    loss_file.write(f"Step {state.global_step}: Loss = {latest_loss_log['loss']}\n")
+        
+        """if state.log_history:
+            with open(self.loss_file, "a") as loss_file:
+                for log in state.log_history:
+                    if "loss" in log:
+                        loss_file.write(f"Step {state.global_step}: Loss = {log['loss']}\n")
+        """
+            
+class GradientLogger(TrainerCallback):
+    def __init__(self, output_dir):
+        self.output_dir = output_dir
+        # 出力ディレクトリが存在しない場合は作成
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            
+    def on_step_end(self, args, state, control, **kwargs):
+        model = kwargs["model"]
+        gradient_data = {}
+        for name, param in model.named_parameters():
+            if param.grad is not None:  # 勾配が計算されている場合のみ保存
+                gradient_data[name] = param.grad.cpu().numpy()
+                gradient_data.append(f"{name}:\n{param.grad}\n")
+        
+        # テキストファイルに保存
+        with open(os.path.join(self.output_dir, f"gradients_step_{self.step}.txt"), "w") as f:
+            f.writelines(gradient_data)
+
+"""譜面用sparse attention作成"""
+class SparseGPT2Attention(GPT2Attention):
+    def __init__(self, config, sparsity=20):
+        super().__init__(config, is_cross_attention=True)
+        # sparsityはAttentionをかけるトークンの間隔
+        self.sparsity = sparsity
+
+    def forward(self, hidden_states, layer_past=None, attention_mask=None, head_mask=None, use_cache=False, output_attentions=False):
+        # 通常のAttentionマスクをスパースに設定
+        batch_size, seq_length = hidden_states.size(0), hidden_states.size(1)
+        mask = torch.ones(batch_size, seq_length, seq_length, device=hidden_states.device)
+
+        # n個おきにAttentionをかける設定
+        for i in range(0, seq_length, self.sparsity):
+            mask[:, i, i:i+self.sparsity] = 0  # 例: 各n個おきの位置にのみAttention
+
+        # スパースマスクを適用して、Attention計算
+        attention_mask = mask.to(hidden_states.device)
+
+        # Attentionの計算
+        attn_output = super().forward(hidden_states, layer_past, attention_mask, head_mask, use_cache)
+        
+        if output_attentions:
+            return attn_output, attention_mask  # 出力に注意を追加
+        else:
+            return attn_output
+    
+class CustomGPT2LMHeadModel(GPT2LMHeadModel):
+    def __init__(self, config):
+        super().__init__(config)
+        for idx, block in enumerate(self.transformer.h):
+            block.attn = SparseGPT2Attention(config)  # 1層目のAttentionをカスタマイズ
+        # 必要に応じて他の層のAttentionもカスタマイズできます
+
+    """def forward(self, input_ids, attention_mask=None, labels=None, output_attentions=False):
+        # ここでCustomGPT2Attentionを利用したforwardロジックを実行
+        outputs = super().forward(input_ids, attention_mask, labels)
+        if output_attentions:
+            # attentionの出力を追加
+            return outputs, outputs.attentions
+        return outputs"""
+            
+"""譜面用Attention作成"""
+def music_attn(self, query, key, value, attention_mask=None, head_mask=None):
+    #内積計算
+    attn_weights = torch.matmul(query, key.transpose(-1, -2))
+    #attentionの分母
+    if self.scale_attn_weights:
+        attn_weights = attn_weights / torch.full(
+            [], value.size(-1) ** 0.5, dtype=attn_weights.dtype, device=attn_weights.device
+        )
+
+    # Layer-wise attention scaling
+    if self.scale_attn_by_inverse_layer_idx:
+        attn_weights = attn_weights / float(self.layer_idx + 1)
+        
+    #未来の情報をマスク
+    if not self.is_cross_attention:
+        # if only "normal" attention layer implements causal mask
+        query_length, key_length = query.size(-2), key.size(-2)
+        causal_mask = self.bias[:, :, key_length - query_length : key_length, :key_length]
+        mask_value = torch.finfo(attn_weights.dtype).min
+        # Need to be a tensor, otherwise we get error: `RuntimeError: expected scalar type float but found double`.
+        # Need to be on the same device, otherwise `RuntimeError: ..., x and y to be on the same device`
+        mask_value = torch.full([], mask_value, dtype=attn_weights.dtype, device=attn_weights.device)
+        attn_weights = torch.where(causal_mask, attn_weights.to(attn_weights.dtype), mask_value)
+
+    if attention_mask is not None:
+        # Apply the attention mask
+        attn_weights = attn_weights + attention_mask
+
+    attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+
+    # Downcast (if necessary) back to V's dtype (if in mixed-precision) -- No-Op otherwise
+    attn_weights = attn_weights.type(value.dtype)
+    attn_weights = self.attn_dropout(attn_weights)
+
+    # Mask heads if we want to
+    if head_mask is not None:
+        attn_weights = attn_weights * head_mask
+
+    attn_output = torch.matmul(attn_weights, value)
+    return attn_output, attn_weights
+                
+                
 class MMMTrainer:
-
     def __init__(self, config: MMMTrainerBaseConfig):
 
         if not isinstance(config, MMMTrainerBaseConfig) and not config.__class__.__base__ == MMMTrainerBaseConfig:
@@ -84,8 +212,19 @@ class MMMTrainer:
             n_positions=self.config.n_positions,
             n_ctx=self.config.n_ctx
         )
+        """model_config = LEDConfig.from_pretrained(
+            "allenai/led-base-16384",  # LEDの事前学習済みモデル
+            gradient_checkpointing=True,  # メモリ削減に必要
+            vocab_size=tokenizer.get_vocab_size(),
+            pad_token_id=tokenizer.token_to_id("[PAD]")
+        )"""
         logger.info(model_config)
+        #modeling_gpt2.GPT2Attention._attn = music_attn
         model = GPT2LMHeadModel(model_config)
+        #model = LEDForConditionalGeneration(model_config)
+        # カスタムモデル呼び出し
+        #config = GPT2Config.from_pretrained("gpt2")
+        #custom_model = CustomGPT2LMHeadModel(config)
 
         # Prepare the training dataset.
         print("Preparing training dataset...")
@@ -121,6 +260,7 @@ class MMMTrainer:
             output_dir=os.path.join(output_path),
             overwrite_output_dir=True,
             evaluation_strategy="steps",
+            eval_steps=1000,
             num_train_epochs=self.config.epochs,
             per_gpu_train_batch_size=self.config.batch_size,
             save_steps=1_000,
@@ -129,14 +269,15 @@ class MMMTrainer:
             logging_strategy="steps",
             logging_dir=os.path.join(output_path, "logs"),
             load_best_model_at_end=True,
-            save_strategy="steps"
+            save_strategy="steps",
         )
         trainer = Trainer(
             model=model,
             args=training_args,
             data_collator=data_collator,
             train_dataset=dataset_train,
-            eval_dataset=dataset_valid
+            eval_dataset=dataset_valid,
+            callbacks=[GradientAndLossCallback(output_dir=output_path)]
         )
 
         # Train the model.
