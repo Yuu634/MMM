@@ -95,7 +95,7 @@ def generate(model, tokenizer, token_sequence):
 
     generated_sequence = model.generate(
         input_ids,
-        min_length=1000,
+        #min_length=100,
         max_length=1000,
         temperature=0.9,
         #pad_token_id=tokenizer.token_to_id("[PAD]"),

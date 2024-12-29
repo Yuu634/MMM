@@ -39,7 +39,14 @@ def preprocess_music21(source_path):
         if os.getenv(var):
             IsSSH = True
             directory = Path('/mnt/aoni04/obara/MMM-JSB/' + source_path)
-            songs = [(f.name, music21.converter.parse(os.path.join('/mnt/aoni04/obara/MMM-JSB',source_path,f.name)) ) for f in directory.iterdir() if f.name.endswith(('.mid','.midi')) ]
+            songs = []
+            for f in directory.iterdir():
+                if f.name.endswith(('.mid','.midi')):
+                    try:
+                        songs.append((f.name, music21.converter.parse(os.path.join('/mnt/aoni04/obara/MMM-JSB',source_path,f.name)) ) )
+                    except:
+                        print("MIDIConvert Error")
+                        continue
             break
             """directory = Path('/mnt/aoni04/obara/MMM-JSB/' + source_path)
             songs = []
