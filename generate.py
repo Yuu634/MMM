@@ -7,6 +7,9 @@ import numpy as np
 from source.helpers.samplinghelpers import *
 from itertools import takewhile
 import sys
+import music21
+from fractions import Fraction
+import torch
 
 #datapath = "ver1"
 # Where the checkpoint lives.
@@ -18,22 +21,22 @@ import sys
 
 
 #楽曲全体の作成
-def generate_song(data_path,Atmosmodel_name,Barmodel_name):
-    """Atmosphere生成準備"""
-    validation_data_path = os.path.join("datasets", data_path, Atmosmodel_name, "token_sequences_valid.txt")
+def generate_song(data_path,model_name):
+    """モデル準備"""
+    validation_data_path = os.path.join("datasets", data_path, model_name, "token_sequences_valid.txt")
 
     #Load tokenizer
-    tokenizer_path = os.path.join("datasets", data_path, Atmosmodel_name, "tokenizer.json")
+    tokenizer_path = os.path.join("datasets", data_path, model_name, "tokenizer.json")
     tokenizer = Tokenizer.from_file(tokenizer_path)
     tokenizer = PreTrainedTokenizerFast(tokenizer_file=tokenizer_path)
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     
     #Load model
-    #model_path = os.path.join("training", data_path, Atmosmodel_name, "checkpoint-181")
-    model_path = os.path.join("training", data_path, "checkpoint-163000")
+    #model_path = os.path.join("training", data_path, model_name, "best_model")
+    model_path = os.path.join("training", data_path, "checkpoint-245000")
     model = GPT2LMHeadModel.from_pretrained(model_path)
     
-    """Atmosphere生成"""
+    """条件生成"""
     print("Model loaded.")
     priming_sample, priming_sample_original = get_priming_token_sequence(
         validation_data_path,
@@ -41,47 +44,170 @@ def generate_song(data_path,Atmosmodel_name,Barmodel_name):
         stop_after_n_tokens=20,
         return_original=True
     )
-    #priming_sample = "Atmosphere=3 Atmosphere2=3 Atmosphere2=3 Atmosphere2=1"
+    priming_sample = "BarCount=0 PIECE_START Atmosphere=27 TRACK_START INST=0 DENSITY=2 BAR_START NOTE_ON=63 TIME_DELTA=1.0 NOTE_OFF=63 TIME_DELTA=3.0 NOTE_ON=65 TIME_DELTA=3.0 NOTE_OFF=65 NOTE_ON=74 TIME_DELTA=2.0 NOTE_OFF=74 TIME_DELTA=3.0 NOTE_ON=52 TIME_DELTA=1.0 NOTE_OFF=52 NOTE_ON=75 TIME_DELTA=2.0 NOTE_OFF=75 NOTE_ON=74 TIME_DELTA=2.0 NOTE_OFF=74 BAR_END BAR_START TIME_DELTA=1.0 NOTE_ON=69 TIME_DELTA=3.0 NOTE_OFF=69 NOTE_ON=70 TIME_DELTA=2.0 NOTE_OFF=70 NOTE_ON=72 TIME_DELTA=2.0 NOTE_OFF=72 TIME_DELTA=6.0 NOTE_ON=65 TIME_DELTA=2.0 NOTE_OFF=65 BAR_END TRACK_END TRACK_START INST=1 DENSITY=1 BAR_START NOTE_ON=55 TIME_DELTA=2.0 NOTE_OFF=55 NOTE_ON=54 TIME_DELTA=2.0 NOTE_OFF=54 NOTE_ON=53 TIME_DELTA=4.0 NOTE_OFF=53 BAR_END BAR_START TIME_DELTA=2.0 NOTE_ON=57 TIME_DELTA=2.0 NOTE_OFF=57 NOTE_ON=60 TIME_DELTA=4.0 NOTE_OFF=60 TIME_DELTA=2.0 NOTE_ON=53 TIME_DELTA=2.0 NOTE_OFF=53 NOTE_ON=57 TIME_DELTA=4.0 NOTE_OFF=57 BAR_END TRACK_END TRACK_START INST=2 DENSITY=0 BAR_START BAR_END BAR_START NOTE_ON=53 TIME_DELTA=8.0 NOTE_OFF=53 NOTE_ON=46 TIME_DELTA=8.0 NOTE_OFF=46 BAR_END TRACK_END"
+    #最初の2小節生成
     generated_sample = generate(model, tokenizer, priming_sample)
-    print(priming_sample)
-    print(generated_sample)
-    print("Atmosphere generated.")
-    sys.exit()
+    song_sequences = generated_sample.split("[PAD]")[0]
+    print(generated_sample.split("[PAD]")[0])
+    #１小節ずつ生成
+    while True:
+        #生成条件
+        priming_sample = "BarCount" + generated_sample.split("BarCount")[2].split("[PAD]")[0]
+        #次の小節作成
+        generated_sample = generate(model, tokenizer, priming_sample)
+        song_sequences += "BarCount" + generated_sample.split("BarCount")[2].split("[PAD]")[0]
+        """
+        #生成条件
+        priming_sample = "BarCount" + generated_sample.split("BarCount")[2].split("BAR_START")[0]
+        #次の小節作成
+        generated_sample = generate(model, tokenizer, priming_sample)
+        song_sequences += "BarCount" + generated_sample.split("BarCount")[2].split("[PAD]")[0]
+        """
+        print("BarCount" + generated_sample.split("BarCount")[2].split("[PAD]")[0])
     
-    #Atmosphereの分割数決定
-    
-    """Bar生成準備"""
-    validation_data_path = os.path.join("datasets", data_path, Barmodel_name, "token_sequences_valid.txt")
-
-    #Load tokenizer
-    tokenizer_path = os.path.join("datasets", data_path, Barmodel_name, "tokenizer.json")
-    tokenizer = Tokenizer.from_file(tokenizer_path)
-    tokenizer = PreTrainedTokenizerFast(tokenizer_file=tokenizer_path)
-    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-    
-    #Load model
-    #model_path = os.path.join("training", data_path, Barmodel_name, "best_model")
-    model_path = os.path.join("training", data_path, Barmodel_name, "best_model")
-    model = GPT2LMHeadModel.from_pretrained(model_path)
-    
-    """Bar生成"""
-    generated_sample = list(takewhile(lambda x: x != '[PAD]', generated_sample.split()))
-    song_sequences = ""
-    bar_num = round(len(generated_sample)/4)
-    for i in range(0,len(generated_sample),4):
-        token_list = generated_sample[i:i+4]
-        condition = ' '.join(token_list)
-        bar_sequences = generate(model, tokenizer, condition)
-        stop_index = bar_sequences.find('[PAD]')
-        if stop_index == -1:
-            song_sequences += bar_sequences
-        else:
-            song_sequences += bar_sequences[:stop_index]
-        print(song_sequences)
-        print("Bar generated : " + str(round(i/4+1)) + '/' + str(bar_num))
-    
-    print(song_sequences)
     return song_sequences
 
+from mido import Message, MidiFile, MidiTrack, MetaMessage
+def create_MIDI(token_sequence, output_file='output.mid'):
+    """
+    トークン列を解析してMIDIファイルを生成する関数
+    Args:
+        token_sequence (str): トークン列
+        output_file (str): 出力するMIDIファイル名
+    """
+    # トークン列を分割
+    tokens = token_sequence.split()
+    
+    # MIDIファイルとトラックの初期化
+    midi = MidiFile()
+    current_track = None
+    time_accumulator = 0  # 時間累積
+    
+    for token in tokens:
+        if token.startswith("TRACK_START"):
+            # 新しいトラックの開始
+            current_track = MidiTrack()
+            midi.tracks.append(current_track)
+        
+        elif token.startswith("TRACK_END"):
+            # トラック終了
+            current_track = None
+        
+        elif token.startswith("INST="):
+            # トラック用のプログラムチェンジ (楽器指定)
+            if current_track is not None:
+                instrument = int(token.split("=")[1])
+                current_track.append(Message('program_change', program=instrument, time=0))
+        
+        elif token.startswith("BAR_START") or token.startswith("BAR_END"):
+            # 小節の区切りは無視（視覚化にのみ意味を持つ）
+            continue
+        
+        elif token.startswith("TIME_DELTA="):
+            # 時間の変化を累積
+            time_delta = float(Fraction(token.split("=")[1]))
+            time_accumulator += int(time_delta * 480)  # 480 ticks = 1 quarter note
+        
+        elif token.startswith("NOTE_ON="):
+            # ノートオンイベント
+            note = int(token.split("=")[1])
+            if current_track is not None:
+                current_track.append(Message('note_on', note=note, velocity=64, time=time_accumulator))
+                time_accumulator = 0  # 時間累積をリセット
+        
+        elif token.startswith("NOTE_OFF="):
+            # ノートオフイベント
+            note = int(token.split("=")[1])
+            if current_track is not None:
+                current_track.append(Message('note_off', note=note, velocity=64, time=time_accumulator))
+                time_accumulator = 0  # 時間累積をリセット
 
-generate_song("AtmosphereAll", "BarModel", "BarModel")
+    # MIDIファイルの保存
+    midi.save(output_file)
+    print(f"MIDIファイルを保存しました: {output_file}")
+    
+def Create_midi(generate_tokens, output_file):
+    # MIDIオブジェクトの作成
+    midi = pretty_midi.PrettyMIDI()
+    #BPM設定
+    midi.adjust_tempo([120])
+    
+    current_time = 0  # 開始時間
+    track_active = False  # トラックがアクティブかどうか
+    track_notes = []  # 現在のトラックのノートリスト
+    track_start_time = 0  # トラックの開始時間
+    time_delta = 0  # 拍の経過時間
+    bar_count = 1 #現在の小節数
+     
+    # トークンの処理
+    for token in generate_tokens:
+        # 楽器の切り替え 
+        if token == 'INST':
+            inst_num = int(token.split('=')[1])
+            instrument = pretty_midi.Instrument(program=pretty_midi.program_to_program_number(program=inst_num))
+
+        #if token == 'PIECE_START':
+        #   pass
+        
+        #次の小節へ
+        elif token == 'BarCount':
+            bar_count += 2
+        
+        # トラック開始
+        elif token == 'TRACK_START':
+            track_active = True  
+            track_notes = []  # トラック内のノートリストをリセット
+            track_start_time = current_time  # トラックの開始時間
+        
+        # トラック終了
+        elif token == 'TRACK_END':
+            track_active = False 
+            if track_notes:
+                # トラックに残っているノートをMIDIに追加
+                for note in track_notes:
+                    instrument.notes.append(note)
+            track_notes = []  # リセット
+
+        #音符開始
+        elif token.startswith('NOTE_ON='):
+            pitch = int(token.split('=')[1])  # ピッチの取得
+            start_time = current_time  # 音符の開始時間
+            end_time = start_time + 0.5  # 音符の終了時間（デフォルトで0.5拍）
+            note = pretty_midi.Note(velocity=100, pitch=pitch, start=start_time, end=end_time)
+            track_notes.append(note)  # トラック内のノートとして追加
+        
+        #音符終了
+        elif token.startswith('NOTE_OFF='):
+            pitch = int(token.split('=')[1])  # ピッチの取得
+            # 対応するNOTE_ONの終了時間を設定（NOTE_ONの時間に基づいて終わる）
+            for note in track_notes:
+                if note.pitch == pitch and note.end == start_time:
+                    note.end = current_time
+                    break
+
+        elif token.startswith('TIME_DELTA='):
+            # TIME_DELTA=経過時間（拍数）
+            time_delta = float(token.split('=')[1])  # 経過時間
+            current_time += time_delta  # 経過時間を加算
+            
+        elif token == 'BAR_START':
+            # 小節の開始は特に処理しない
+            pass
+        
+        elif token == 'BAR_END':
+            bar_count += 1
+            pass
+
+    # インストゥルメントをMIDIファイルに追加
+    midi.instruments.append(instrument)
+
+
+
+    # MIDIファイルとして保存
+    midi.write(output_file)
+    print(f'MIDIファイルが {output_file} として保存されました！')
+
+generate_song("AtmosphereAll2", "")
+
+#sequences = "PIECE_START TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START BAR_END BAR_START BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START TIME_DELTA=8.0 NOTE_ON=59 TIME_DELTA=8.0 NOTE_OFF=59 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START BAR_END BAR_START BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=71 TIME_DELTA=2.6666666666666665 NOTE_OFF=71 NOTE_ON=74 TIME_DELTA=4/3 NOTE_OFF=74 TIME_DELTA=4/3 NOTE_ON=76 TIME_DELTA=8/3 NOTE_OFF=76 NOTE_ON=71 TIME_DELTA=6.0 NOTE_OFF=71 NOTE_ON=67 TIME_DELTA=2.0 NOTE_OFF=67 BAR_END BAR_START NOTE_ON=71 TIME_DELTA=2.6666666666666665 NOTE_OFF=71 NOTE_ON=74 TIME_DELTA=8/3 NOTE_OFF=74 NOTE_ON=76 TIME_DELTA=8/3 NOTE_OFF=76 NOTE_ON=71 TIME_DELTA=6.0 NOTE_OFF=71 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START TIME_DELTA=8.0 NOTE_ON=59 TIME_DELTA=8.0 NOTE_OFF=59 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=71 TIME_DELTA=2.6666666666666665 NOTE_OFF=71 NOTE_ON=74 TIME_DELTA=8/3 NOTE_OFF=74 NOTE_ON=76 TIME_DELTA=8/3 NOTE_OFF=76 NOTE_ON=71 TIME_DELTA=4.0 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=2.666666666666666 NOTE_OFF=69 NOTE_ON=67 TIME_DELTA=4/3 NOTE_OFF=67 BAR_END BAR_START NOTE_ON=71 TIME_DELTA=2.6666666666666665 NOTE_OFF=71 NOTE_ON=74 TIME_DELTA=8/3 NOTE_OFF=74 NOTE_ON=76 TIME_DELTA=8/3 NOTE_OFF=76 NOTE_ON=71 TIME_DELTA=6.0 NOTE_OFF=71 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=71 TIME_DELTA=2.6666666666666665 NOTE_OFF=71 NOTE_ON=74 TIME_DELTA=8/3 NOTE_OFF=74 NOTE_ON=76 TIME_DELTA=8/3 NOTE_OFF=76 NOTE_ON=79 TIME_DELTA=2.666666666666666 NOTE_OFF=79 NOTE_ON=78 TIME_DELTA=8/3 NOTE_OFF=78 NOTE_ON=76 TIME_DELTA=4/3 NOTE_OFF=76 NOTE_ON=74 TIME_DELTA=4/3 NOTE_OFF=74 BAR_END BAR_START NOTE_ON=74 TIME_DELTA=2.6666666666666665 NOTE_OFF=74 NOTE_ON=71 TIME_DELTA=8/3 NOTE_OFF=71 NOTE_ON=72 TIME_DELTA=8/3 NOTE_OFF=72 NOTE_ON=74 TIME_DELTA=6.0 NOTE_OFF=74 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START TIME_DELTA=8.0 NOTE_ON=59 TIME_DELTA=8.0 NOTE_OFF=59 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=71 TIME_DELTA=2.6666666666666665 NOTE_OFF=71 NOTE_ON=74 TIME_DELTA=8/3 NOTE_OFF=74 NOTE_ON=76 TIME_DELTA=8/3 NOTE_OFF=76 NOTE_ON=71 TIME_DELTA=4.0 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=2.666666666666666 NOTE_OFF=69 NOTE_ON=67 TIME_DELTA=4/3 NOTE_OFF=67 BAR_END BAR_START NOTE_ON=71 TIME_DELTA=2.6666666666666665 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=8/3 NOTE_OFF=69 NOTE_ON=67 TIME_DELTA=8/3 NOTE_OFF=67 NOTE_ON=67 TIME_DELTA=2.666666666666666 NOTE_OFF=67 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=71 TIME_DELTA=2.6666666666666665 NOTE_OFF=71 NOTE_ON=74 TIME_DELTA=8/3 NOTE_OFF=74 NOTE_ON=76 TIME_DELTA=8/3 NOTE_OFF=76 NOTE_ON=79 TIME_DELTA=2.666666666666666 NOTE_OFF=79 NOTE_ON=78 TIME_DELTA=8/3 NOTE_OFF=78 NOTE_ON=76 TIME_DELTA=4/3 NOTE_OFF=76 NOTE_ON=74 TIME_DELTA=4/3 NOTE_OFF=74 BAR_END BAR_START NOTE_ON=74 TIME_DELTA=2.6666666666666665 NOTE_OFF=74 NOTE_ON=71 TIME_DELTA=8/3 NOTE_OFF=71 NOTE_ON=72 TIME_DELTA=8/3 NOTE_OFF=72 NOTE_ON=74 TIME_DELTA=6.0 NOTE_OFF=74 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START TIME_DELTA=8.0 NOTE_ON=59 TIME_DELTA=8.0 NOTE_OFF=59 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=74 TIME_DELTA=2.6666666666666665 NOTE_OFF=74 NOTE_ON=71 TIME_DELTA=8/3 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=8/3 NOTE_OFF=69 NOTE_ON=71 TIME_DELTA=4.0 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=2.666666666666666 NOTE_OFF=69 NOTE_ON=67 TIME_DELTA=4/3 NOTE_OFF=67 BAR_END BAR_START NOTE_ON=71 TIME_DELTA=2.6666666666666665 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=8/3 NOTE_OFF=69 NOTE_ON=67 TIME_DELTA=8/3 NOTE_OFF=67 NOTE_ON=67 TIME_DELTA=2.666666666666666 NOTE_OFF=67 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=71 TIME_DELTA=2.6666666666666665 NOTE_OFF=71 NOTE_ON=74 TIME_DELTA=8/3 NOTE_OFF=74 NOTE_ON=76 TIME_DELTA=8/3 NOTE_OFF=76 NOTE_ON=71 TIME_DELTA=4.0 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=2.666666666666666 NOTE_OFF=69 NOTE_ON=67 TIME_DELTA=4/3 NOTE_OFF=67 BAR_END BAR_START NOTE_ON=71 TIME_DELTA=4.0 NOTE_OFF=71 NOTE_ON=72 TIME_DELTA=4.0 NOTE_OFF=72 NOTE_ON=74 TIME_DELTA=4.0 NOTE_OFF=74 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START TIME_DELTA=8.0 NOTE_ON=59 TIME_DELTA=8.0 NOTE_OFF=59 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=76 TIME_DELTA=2.6666666666666665 NOTE_OFF=76 NOTE_ON=74 TIME_DELTA=8/3 NOTE_OFF=74 NOTE_ON=76 TIME_DELTA=4/3 NOTE_OFF=76 NOTE_ON=71 TIME_DELTA=16/3 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=2.666666666666666 NOTE_OFF=69 NOTE_ON=67 TIME_DELTA=4/3 NOTE_OFF=67 BAR_END BAR_START NOTE_ON=71 TIME_DELTA=2.6666666666666665 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=8/3 NOTE_OFF=69 NOTE_ON=67 TIME_DELTA=8/3 NOTE_OFF=67 NOTE_ON=67 TIME_DELTA=4.0 NOTE_OFF=67 NOTE_ON=69 TIME_DELTA=1.333333333333334 NOTE_ON=71 NOTE_OFF=69 TIME_DELTA=2.666666666666666 NOTE_OFF=71 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START TIME_DELTA=8.0 NOTE_ON=71 TIME_DELTA=2.666666666666666 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=8/3 NOTE_OFF=69 NOTE_ON=69 TIME_DELTA=8/3 NOTE_OFF=69 BAR_END BAR_START NOTE_ON=69 TIME_DELTA=2.6666666666666665 NOTE_OFF=69 NOTE_ON=69 TIME_DELTA=8/3 NOTE_OFF=69 NOTE_ON=69 TIME_DELTA=8/3 NOTE_OFF=69 NOTE_ON=69 TIME_DELTA=4.0 NOTE_OFF=69 NOTE_ON=71 TIME_DELTA=2.666666666666666 NOTE_OFF=71 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START TIME_DELTA=8.0 NOTE_ON=59 TIME_DELTA=8.0 NOTE_OFF=59 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START TIME_DELTA=20/3 NOTE_ON=67 TIME_DELTA=4/3 NOTE_OFF=67 NOTE_ON=71 TIME_DELTA=2.666666666666666 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=8/3 NOTE_OFF=69 NOTE_ON=67 TIME_DELTA=8/3 NOTE_OFF=67 BAR_END BAR_START NOTE_ON=74 TIME_DELTA=2.6666666666666665 NOTE_OFF=74 NOTE_ON=74 TIME_DELTA=4/3 NOTE_OFF=74 NOTE_ON=71 TIME_DELTA=4.0 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=4.0 NOTE_OFF=69 NOTE_ON=67 TIME_DELTA=4.0 NOTE_OFF=67 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=76 TIME_DELTA=8.0 NOTE_OFF=76 NOTE_ON=74 TIME_DELTA=8.0 NOTE_OFF=74 BAR_END BAR_START NOTE_ON=79 TIME_DELTA=8.0 NOTE_OFF=79 NOTE_ON=81 TIME_DELTA=8.0 NOTE_OFF=81 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START BAR_END BAR_START NOTE_ON=50 TIME_DELTA=2.0 NOTE_OFF=50 NOTE_ON=54 TIME_DELTA=2.0 NOTE_OFF=54 NOTE_ON=57 TIME_DELTA=2.0 NOTE_OFF=57 NOTE_ON=62 TIME_DELTA=2.0 NOTE_OFF=62 NOTE_ON=66 TIME_DELTA=2.0 NOTE_OFF=66 NOTE_ON=62 TIME_DELTA=2.0 NOTE_OFF=62 NOTE_ON=66 TIME_DELTA=2.0 NOTE_OFF=66 NOTE_ON=69 TIME_DELTA=2.0 NOTE_OFF=69 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=81 TIME_DELTA=8.0 NOTE_OFF=81 BAR_END BAR_START BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START NOTE_ON=59 TIME_DELTA=16.0 NOTE_OFF=59 BAR_END BAR_START NOTE_ON=55 TIME_DELTA=16.0 NOTE_OFF=55 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START TIME_DELTA=2.0 NOTE_ON=71 TIME_DELTA=2.0 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=2.0 NOTE_OFF=69 NOTE_ON=71 TIME_DELTA=2.0 NOTE_OFF=71 NOTE_ON=74 TIME_DELTA=4.0 NOTE_OFF=74 NOTE_ON=67 TIME_DELTA=2.0 NOTE_OFF=67 BAR_END BAR_START TIME_DELTA=2.0 NOTE_ON=71 TIME_DELTA=2.0 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=2.0 NOTE_OFF=69 NOTE_ON=74 TIME_DELTA=2.0 NOTE_OFF=74 NOTE_ON=71 TIME_DELTA=6.0 NOTE_OFF=71 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START NOTE_ON=60 TIME_DELTA=16.0 NOTE_OFF=60 BAR_END BAR_START NOTE_ON=50 TIME_DELTA=16.0 NOTE_OFF=50 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=72 TIME_DELTA=2.0 NOTE_OFF=72 NOTE_ON=71 TIME_DELTA=2.0 NOTE_OFF=71 NOTE_ON=72 TIME_DELTA=2.0 NOTE_OFF=72 NOTE_ON=71 TIME_DELTA=2.0 NOTE_OFF=71 NOTE_ON=72 TIME_DELTA=4.0 NOTE_OFF=72 NOTE_ON=67 TIME_DELTA=4.0 NOTE_OFF=67 BAR_END BAR_START TIME_DELTA=4.0 NOTE_ON=71 TIME_DELTA=2.0 NOTE_OFF=71 NOTE_ON=74 TIME_DELTA=2.0 NOTE_OFF=74 NOTE_ON=71 TIME_DELTA=4.0 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=2.0 NOTE_OFF=69 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START NOTE_ON=59 TIME_DELTA=16.0 NOTE_OFF=59 BAR_END BAR_START NOTE_ON=55 TIME_DELTA=16.0 NOTE_OFF=55 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START TIME_DELTA=4/3 NOTE_ON=71 TIME_DELTA=8/3 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=2.0 NOTE_OFF=69 NOTE_ON=71 TIME_DELTA=2.0 NOTE_OFF=71 NOTE_ON=74 TIME_DELTA=4.0 NOTE_OFF=74 NOTE_ON=76 TIME_DELTA=4.0 NOTE_OFF=76 BAR_END BAR_START NOTE_ON=76 TIME_DELTA=2.6666666666666665 NOTE_OFF=76 TIME_DELTA=1.3333333333333335 NOTE_ON=71 TIME_DELTA=2.0 NOTE_OFF=71 NOTE_ON=69 TIME_DELTA=2.0 NOTE_OFF=69 NOTE_ON=71 TIME_DELTA=6.0 NOTE_OFF=71 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START NOTE_ON=60 TIME_DELTA=16.0 NOTE_OFF=60 BAR_END BAR_START NOTE_ON=50 TIME_DELTA=16.0 NOTE_OFF=50 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=72 TIME_DELTA=2.0 NOTE_OFF=72 NOTE_ON=71 TIME_DELTA=2.0 NOTE_OFF=71 NOTE_ON=72 TIME_DELTA=2.0 NOTE_OFF=72 NOTE_ON=71 TIME_DELTA=2.0 NOTE_OFF=71 NOTE_ON=72 TIME_DELTA=4.0 NOTE_OFF=72 NOTE_ON=67 TIME_DELTA=4.0 NOTE_OFF=67 BAR_END BAR_START TIME_DELTA=4.0 NOTE_ON=71 TIME_DELTA=2.0 NOTE_OFF=71 NOTE_ON=74 TIME_DELTA=2.0 NOTE_OFF=74 NOTE_ON=71 TIME_DELTA=4.0 NOTE_OFF=71 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START NOTE_ON=59 TIME_DELTA=16.0 NOTE_OFF=59 BAR_END BAR_START NOTE_ON=55 TIME_DELTA=16.0 NOTE_OFF=55 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=79 TIME_DELTA=4.0 NOTE_OFF=79 TIME_DELTA=4.0 NOTE_ON=78 TIME_DELTA=4.0 NOTE_OFF=78 BAR_END BAR_START NOTE_ON=76 TIME_DELTA=4.0 NOTE_OFF=76 TIME_DELTA=4.0 NOTE_ON=74 TIME_DELTA=4.0 NOTE_OFF=74 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START NOTE_ON=60 TIME_DELTA=16.0 NOTE_OFF=60 BAR_END BAR_START NOTE_ON=50 TIME_DELTA=16.0 NOTE_OFF=50 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START TIME_DELTA=4.0 NOTE_ON=74 TIME_DELTA=2.666666666666666 NOTE_OFF=74 TIME_DELTA=1.333333333333334 NOTE_ON=74 TIME_DELTA=2.666666666666666 NOTE_OFF=74 TIME_DELTA=1.333333333333334 NOTE_ON=76 TIME_DELTA=2.0 NOTE_OFF=76 NOTE_ON=71 TIME_DELTA=2.0 NOTE_OFF=71 BAR_END BAR_START TIME_DELTA=8.0 NOTE_ON=67 TIME_DELTA=4.0 NOTE_OFF=67 BAR_END TRACK_END NEXTBAR TRACK_START INST=0 DENSITY=0 BAR_START NOTE_ON=59 TIME_DELTA=16.0 NOTE_OFF=59 BAR_END BAR_START NOTE_ON=55 TIME_DELTA=16.0 NOTE_OFF=55 BAR_END TRACK_END TRACK_START INST=1 DENSITY=0 BAR_START NOTE_ON=79 TIME_DELTA=8.0 NOTE_OFF=79 NOTE_ON=78 TIME_DELTA=8.0 NOTE_OFF=78 BAR_END BAR_START NOTE_ON=76 TIME_DELTA=8.0 NOTE_OFF=76 NOTE_ON=74 TIME_DELTA=8.0 NOTE_OFF=74 BAR_END TRACK_END NEXTBAR PIECE_END"
+#create_MIDI(sequences)
