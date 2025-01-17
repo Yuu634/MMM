@@ -1,2 +1,2 @@
 # MMM
-research
+・生成譜面のMIDIファイル作成が可能に
