@@ -19,7 +19,7 @@ import numpy as np
 import random
 import json
 import sys
-from source.preprocess.Atmosphere import get_Atmosphere
+from source.preprocess.Atmosphere import get_Atmosphere,csv_to_Atmosphere
 
 
 def encode_songs_data(songs_data, source_path, IsAtmosphere, transpositions, permute, window_size_bars, hop_length_bars, density_bins, bar_fill):
@@ -34,7 +34,10 @@ def encode_songs_data(songs_data, source_path, IsAtmosphere, transpositions, per
     else:
         #Atmosphereトークン取得
         print("Cluster Start")
-        Atmosphere_lists = get_Atmosphere(source_path)
+        if(len(transpositions)>1):
+            Atmosphere_lists = csv_to_Atmosphere("Atmosphere_label.csv")
+        else:
+            Atmosphere_lists = get_Atmosphere(source_path)
         print("Cluster End")
         if Atmosphere_lists == []:
             print("Atmosphereを取得できません")
@@ -105,12 +108,16 @@ def encode_song_data(song_data, transpositions, permute, window_size_bars, hop_l
 #Atmosphereありのエンコード
 def encode_Atmosphere_data(atmosphere, song_data, transpositions, permute, window_size_bars, hop_length_bars, density_bins, bar_fill):
     token_sequence = []
+    last_Atmosphere = None
     
     #曲全体のAtmosphereを挿入
+    atmosphere = dict(sorted(atmosphere.items()))
     for time,token in atmosphere.items():
-        if token[0] != None:
+        if token[0] != None and token[0] != last_Atmosphere:
             token_sequence += ["Atmosphere=" + str(token[0])]
-        token_sequence += ["Atmosphere2=" + str(token[1])]
+            last_Atmosphere = token[0]
+        if token[1] != None:
+            token_sequence += ["Atmosphere2=" + str(token[1])]
             
     # Start with the tokens.
     token_sequence += ["PIECE_START"]
@@ -124,20 +131,23 @@ def encode_Atmosphere_data(atmosphere, song_data, transpositions, permute, windo
 
     # Go through all combinations.
     count = 0
-    maximum = -1
     
     for (bar_start_index, bar_end_index), transposition in itertools.product(bar_indices, transpositions):
         
-        """Atmosphere切り替えタイミングと近ければトークン追加"""
-        #middletime = ((bar_start_index+bar_end_index)/2)*bartime
-        #更新されるAtmosphereの中で最小時間にいるキー取得
-        #max_key = min((t for t in atmosphere.keys() if maximum < t <= middletime), default=-1)
+        #小節内最初のAtmosphere取得
+        min_key = min((t for t in atmosphere.keys() if bar_start_index*bartime <= float(t)), default=0.0)
+        first_atmos = atmosphere[min_key][0]
+        token_sequence += ["Atmosphere=" + str(first_atmos)]
+        last_Atmosphere = first_atmos
+        
         #小節の時間内のキー取得
         for time,atmos_tuple in atmosphere.items():
             if bar_start_index*bartime <= time < bar_end_index*bartime:
-                if atmos_tuple[0] != None:
+                if atmos_tuple[0] != None and atmos_tuple[0] != last_Atmosphere:
                     token_sequence += ["Atmosphere=" + str(atmos_tuple[0])]
-                token_sequence += ["Atmosphere2=" + str(atmos_tuple[1])]
+                    last_Atmosphere = atmos_tuple[0]
+                if atmos_tuple[1] != None:
+                    token_sequence += ["Atmosphere2=" + str(atmos_tuple[1])]
 
         # Do bar fill if necessary.
         if bar_fill:

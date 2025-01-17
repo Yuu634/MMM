@@ -115,9 +115,9 @@ class MyDatasetCreatorTrackConfig(DatasetCreatorBaseConfig):
 
     def __init__(self, **kwargs):
         super().__init__(
-            dataset_name="ver1", #保存先ディレクトリ
-            datasetSource_path='vgDataset', #学習データセットディレクトリ
-            IsAtmosphere=True, #Atmosphereトークンを付けるか
+            dataset_name="test", #データ＆保存先ディレクトリ
+            datasetSource_path='testDataset', #学習データセットディレクトリ
+            IsAtmosphere=False, #Atmosphereトークンを付けるか
             encoding_method="mmmtrack",
             #json_data_method="My_preprocess",
             json_data_method="preprocess_music21",

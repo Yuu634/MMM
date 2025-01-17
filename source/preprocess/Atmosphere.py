@@ -7,13 +7,14 @@ import numpy as np
 import math
 from sklearn import cluster
 import pandas as pd
-import seaborn as sns
+#import seaborn as sns
 import IPython.display
 import datetime
 import platform
 from midi2audio import FluidSynth
 from pydub import AudioSegment
 from scipy.cluster.hierarchy import dendrogram, linkage
+import ast
 #%matplotlib inline
 
 # 後ほど用いる関数
@@ -32,8 +33,8 @@ def df_to_df_list(df):
 
     return df_list
 
-def pick_colors(df):
-    return  list(clrs.cnames.values())[:len(df.columns)]
+#def pick_colors(df):
+#   return  list(clrs.cnames.values())[:len(df.columns)]
 
 def show_stackplot(index_df,df_list,colors):
     fig, ax = plt.subplots(1, 1, figsize=(15,5))
@@ -63,20 +64,22 @@ def combine_wav_files(wav_files, output_path):
     combined.export(output_path, format="wav")
 
 
-""" メイン関数（曲ごとにクラスタリング） """
+""" メイン関数（全曲によるクラスタリング） """
 def get_Atmosphere(source_path):
     """変数設定"""
     # フーリエ変換の初期設定(調整必要)
     n_fft = 1024 # データの取得幅
     hop_length = n_fft // 4 # 次の取得までの幅
-    # クラスタ分類の数(調整必要)
-    n_clusters=20
+    # クラスタ分類の数⇒次元数　(調整必要)
+    n_clusters = 30
+    # 学習データ全体でのクラスタ数
+    all_clusters = 40
     # k_meansのラベルをいくつずつ見ていくか(調整必要)
     hop = 50
     # クラスタ数⇒Atmosphereの種類(調整必要)
     music_cluster_num = 4
     #クラスタくっつける個数（調整必要）
-    min_num = 5
+    min_num = 4
     
     # MIDIファイルが保存されているディレクトリのパスを指定
     ssh_env_vars = ['SSH_CONNECTION', 'SSH_CLIENT', 'SSH_TTY']
@@ -97,10 +100,12 @@ def get_Atmosphere(source_path):
         convert_all_midi_to_wav(directory)
     
     #結果格納リスト
-    Atmosphere_list = {} #[]
-
+    Atmosphere_list = []
+    columns = list(range(n_clusters)) + ['cluster', 'cluster_index','filename','index_time']
+    cluster_mean_list = pd.DataFrame(columns=columns)
     for filename in os.listdir(directory):
         """ファイル拡張子確認"""
+        #music:音楽情報のベクトル化 fs:サンプリングレート
         if filename.endswith('.wav'):
             wavfile = os.path.join(directory, filename)
             music,fs = librosa.load(wavfile)
@@ -109,6 +114,7 @@ def get_Atmosphere(source_path):
             music,fs = librosa.load(mp3file)
         else:
             continue
+        
         """スペクトログラム取得"""
         D = librosa.stft(music,n_fft=n_fft,hop_length=hop_length,win_length=None)
         spectrogram = np.abs(D)**2
@@ -117,7 +123,13 @@ def get_Atmosphere(source_path):
         # クラスタ分類(k_means)
         logamp = librosa.amplitude_to_db(spectrogram,ref=np.max)
         k_means = cluster.KMeans(n_clusters=n_clusters)
-        k_means.fit(logamp.T)
+        try:
+            k_means.fit(logamp.T)
+        except:
+            print("Cluster Error")
+            continue
+        
+        #kmeansのラベルごとにdbを
         col = k_means.labels_.shape[0]
         # グラフ作成
         count_list = []
@@ -129,32 +141,22 @@ def get_Atmosphere(source_path):
             count_list.append(count)
         # index内容
         index = [(len(music)/fs)/len(count_list)*x for x in range(len(count_list))] # 秒数
+        #hopごとに、どのクラスタが何回出てきているかをテーブル化
         df = pd.DataFrame(count_list,index = index).fillna(0)
 
         columns = [chr(i) for i in range(65,65+26)][:10]
-
-        df_list = df_to_df_list(df)
-        colors = pick_colors(df)
-        #show_stackplot(df,df_list,colors)
-
-        """階層的クラスタリング
-        plt.figure(figsize=(10, 7))
-        clu = linkage(df,method='ward')
-        dendrogram(clu)
-        plt.show()"""
         
         """Atmosphereトークン取得用クラスタリング"""
-        k_means_music = cluster.KMeans(n_clusters=music_cluster_num, n_init='auto')
-        k_means_music.fit(df)
-        Atmosphere2 = cluster.KMeans(n_clusters=music_cluster_num*2, n_init='auto')
-        Atmosphere2.fit(df)
+        #hopごとにクラスタ作成（約１秒に１つ）
+        try:
+            k_means_music = cluster.KMeans(n_clusters=music_cluster_num, n_init='auto')
+            k_means_music.fit(df)
+            #Atmosphere2 = cluster.KMeans(n_clusters=music_cluster_num*2, n_init='auto')
+            #Atmosphere2.fit(df)
+        except:
+            print("Cluster Error")
+            continue
         df['cluster']  = k_means_music.labels_
-
-        df4 = labels_list_to_df(k_means_music.labels_)
-        df4_list = df_to_df_list(df4)
-        colors = pick_colors(df4)
-        #show_stackplot(df,df4_list,colors)
-
         """短いクラスタの結合"""
         comp_list = []
         m=1
@@ -193,76 +195,108 @@ def get_Atmosphere(source_path):
                     k += 1
 
             comp_list = replace_comp_list
-        
-
         # 元の形式に戻す
         thawing_list = []
         for i in range(len(replace_comp_list)):
             for j in range(replace_comp_list[i][1]):
                 thawing_list.append(replace_comp_list[i][0])
-                
-        #print(thawing_list)
+        
+        """各クラスタごとのdfの平均値を計算"""
+        df['cluster'] = thawing_list
+        thawing_mean = df.groupby('cluster').mean()
+        thawing_mean['cluster'] = thawing_mean.index
+        # clusterごとのindexリストをカラムに追加
+        cluster_indices = df.groupby('cluster').apply(lambda x: x.index.tolist())
+        thawing_mean['cluster_index'] = thawing_mean['cluster'].map(cluster_indices)
+        #全曲クラスタリング用データに追加
+        thawing_mean['filename'] = filename
+        thawing_mean['index_time'] = (len(music)/fs)/len(count_list)
+        
+        cluster_mean_list = pd.concat([cluster_mean_list.reset_index(drop=True), thawing_mean.reset_index(drop=True)])
+    
+    #欠損値（Nan）の補完
+    """for column_name in range(n_clusters):
+        column_name = str(column_name)
+        cluster_mean_list[column_name] = cluster_mean_list.groupby("filename")[column_name].transform(
+            lambda group: group.fillna(group.mean() if not pd.isna(group.mean()) else 0)
+        )"""
+    target_columns = df.columns[:df.columns.get_loc("cluster")]
+    for column_name in target_columns:
+        cluster_mean_list[column_name] = cluster_mean_list[column_name].fillna(cluster_mean_list[column_name].mean())
+    #Excelに保存
+    #cluster_mean_list.to_csv("Atmosphere_label.csv", index=False, encoding="utf-8")
+    #全曲のcluster中心点でKmeans
+    allmusic_kmeans = cluster.KMeans(n_clusters=all_clusters, n_init='auto')
+    allmusic_kmeans.fit(cluster_mean_list.loc[:, cluster_mean_list.columns[:cluster_mean_list.columns.get_loc('cluster')]])
+    cluster_list = pd.DataFrame()
+    cluster_list = cluster_list.reset_index(drop=True)
+    cluster_mean_list = cluster_mean_list.reset_index(drop=True)
+    cluster_list['cluster'] = allmusic_kmeans.labels_.tolist()
+    cluster_list = pd.concat([cluster_list, cluster_mean_list.loc[:, 'cluster_index':]], axis=1)
 
-        """結果取得 （時間：クラスタ値）"""
-        """result = {}
-        result['filename'] = filename
-        n=0
-        result[0] = thawing_list[0]
-        last_Atmoshere = thawing_list[0]
-        for Atmosphere in thawing_list:
-            if Atmosphere != last_Atmoshere:
-                result[index[n]] = Atmosphere
-                last_Atmoshere = Atmosphere
-            n += 1
-        Atmosphere_list.append(result)
-        """
-        
-        """Atmosphereリスト格納
-        Atmosphere_list = []
-        element = []
-        time = 0
-        last_Atmosphere = thawing_list[0]
-        element.append({index[0]:thawing_list[0]})
-        for Atmosphere,Atmosphere2 in zip(thawing_list,Atmosphere2.labels_):
-            #Atmosphereの切り替わるタイミングのみAtmosphere追加
-            if Atmosphere != last_Atmosphere:
-                element.append({index[time]:Atmosphere})
-                last_Atmosphere = Atmosphere
-            element.append({index[time]:Atmosphere2})
-            time += 1
-        Atmosphere_list.append({filename:element})
-        """
-        
-        """Atmosphere辞書格納"""
-        Atmosphere_list = []
+    """Atmosphere辞書格納(Atmosphereのみ)"""
+    for row in cluster_list.itertuples():
         element = {}
-        time = 0
-        last_Atmosphere = None
-        for atmos,atmos2 in zip(thawing_list,Atmosphere2.labels_):
-            #Atmosphereの切り替わるタイミングのみAtmosphere追加
-            if atmos != last_Atmosphere:
-                element[index[time]] = (atmos,atmos2)
-                last_Atmosphere = atmos
-            else:
-                element[index[time]] = (None,atmos2)
-            time += 1
-        Atmosphere_list.append({filename:element})
-        df5 = labels_list_to_df(thawing_list)
-        df5_list = df_to_df_list(df5)
-        colors = pick_colors(df5)
+        for time in row.cluster_index:
+            element[time] = (row.cluster,None)
+        found = False
+        
+        for entry in Atmosphere_list:
+            if row.filename in entry:
+                # すでに存在する場合、その value に element を加える
+                entry[row.filename].update(element)
+                found = True
+                break 
+        # 存在しない場合、新しいエントリを追加
+        if not found:
+            Atmosphere_list.append({row.filename:element})
+    
+    return Atmosphere_list
 
-        """結果の表示"""
-        #show_stackplot(df,df5_list,colors)
-
-        """
-        plt.figure(figsize=(10, 6))
-        plt.title('Power spectrogram')
-        #plt.colorbar(format='%+2.0f dB')
-        plt.tight_layout
-        #show_stackplot(df,df4_list,colors)
-        plt.show()"""
+"""保存済みクラスタがある場合"""
+def csv_to_Atmosphere(filename):
+    cluster_mean_list = pd.read_csv(filename)
+    n_clusters=30
+    all_clusters=40
+    #index 文字列⇒リストに変換
+    cluster_mean_list["cluster_index"] = cluster_mean_list["cluster_index"].apply(ast.literal_eval)
+    #欠損値（Nan）の補完
+    for column_name in range(n_clusters):
+        column_name = str(column_name)
+        cluster_mean_list[column_name] = cluster_mean_list.groupby("filename")[column_name].transform(
+            lambda group: group.fillna(group.mean() if not pd.isna(group.mean()) else 0)
+        )
+    #cluster_mean_list.to_csv("Atmosphere_label.csv", index=False, encoding="utf-8")
+    #全曲のcluster中心点でKmeans
+    allmusic_kmeans = cluster.KMeans(n_clusters=all_clusters, n_init='auto')
+    allmusic_kmeans.fit(cluster_mean_list.loc[:, cluster_mean_list.columns[:cluster_mean_list.columns.get_loc('cluster')]])
+    cluster_list = pd.DataFrame()
+    cluster_list = cluster_list.reset_index(drop=True)
+    cluster_mean_list = cluster_mean_list.reset_index(drop=True)
+    cluster_list['cluster'] = allmusic_kmeans.labels_.tolist()
+    cluster_list = pd.concat([cluster_list, cluster_mean_list.loc[:, 'cluster_index':]], axis=1)
+    #CSVで保存
+    cluster_list.to_csv("AtmosphereAll_label.csv", index=False, encoding="utf-8")
+    
+    """Atmosphere辞書格納(Atmosphereのみ)"""
+    Atmosphere_list = []
+    for row in cluster_list.itertuples():
+        element = {}
+        for time in row.cluster_index:
+            element[time] = (row.cluster,None)
+        found = False
+        
+        for entry in Atmosphere_list:
+            if row.filename in entry:
+                # すでに存在する場合、その value に element を加える
+                entry[row.filename].update(element)
+                found = True
+                break
+        # 存在しない場合、新しいエントリを追加
+        if not found:
+            Atmosphere_list.append({row.filename:element})
     
     return Atmosphere_list
     
-#get_Atmosphere("test")
-convert_all_midi_to_wav("/mnt/c/Users/yuki-/.vscode/Python/research/MMM-JSB/vgDataset")
+#get_Atmosphere("testDataset")
+csv_to_Atmosphere("Atmosphere_label.csv")

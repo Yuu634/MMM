@@ -19,22 +19,49 @@ import numpy as np
 import random
 import collections
 import torch
+from torch import nn
 from typing import Dict
 from torch.utils.data.dataset import Dataset
 from tokenizers import Tokenizer
 from transformers import DataCollatorWithPadding
-from transformers import Trainer, TrainingArguments
-from transformers import GPT2Config, GPT2LMHeadModel
+from transformers import Trainer, TrainingArguments, TrainerCallback
+from transformers import GPT2Config, GPT2LMHeadModel, LEDForConditionalGeneration, LEDConfig, LongformerForMaskedLM, LongformerConfig
+from performer_pytorch import PerformerLM
 from transformers import PreTrainedTokenizerFast
+from transformers.models.gpt2.modeling_gpt2 import GPT2Attention
 from tqdm import tqdm
 from source.mmmtrainerconfig import MMMTrainerBaseConfig
 from source import logging
+from torch.cuda.amp import autocast
+from torch.nn import DataParallel
 
 logger = logging.create_logger("mmmtrainer")
 
+class GradientAndLossCallback(TrainerCallback):
+    def __init__(self, output_dir="training/logs", gradient_file="gradients.txt", loss_file="losses.txt"):
+        self.gradient_file = os.path.join(output_dir, gradient_file)
+        self.loss_file = os.path.join(output_dir, loss_file)
 
+    #def on_step_end(self, args, state, control, model, **kwargs):
+    def on_evaluate(self, args, state, control, model, **kwargs):
+        # 損失を記録
+        if state.log_history:
+            # 損失があるログを逆順にチェックして取得
+            latest_loss_log = next((log for log in reversed(state.log_history) if "loss" in log), None)
+            # 損失があるログが見つかった場合にファイルに書き込む
+            if latest_loss_log:
+                with open(self.loss_file, "a") as loss_file:
+                    loss_file.write(f"Step {state.global_step}: Loss = {latest_loss_log['loss']}\n")
+        
+        """if state.log_history:
+            with open(self.loss_file, "a") as loss_file:
+                for log in state.log_history:
+                    if "loss" in log:
+                        loss_file.write(f"Step {state.global_step}: Loss = {log['loss']}\n")
+        """
+            
+                
 class MMMTrainer:
-
     def __init__(self, config: MMMTrainerBaseConfig):
 
         if not isinstance(config, MMMTrainerBaseConfig) and not config.__class__.__base__ == MMMTrainerBaseConfig:
@@ -71,7 +98,7 @@ class MMMTrainer:
         tokenizer = Tokenizer.from_file(self.config.tokenizer_path)
         pretrained_tokenizer = PreTrainedTokenizerFast(tokenizer_file=self.config.tokenizer_path)
         pretrained_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-
+        
         # Create the model.
         model_config = GPT2Config(
             vocab_size=tokenizer.get_vocab_size(),
@@ -86,6 +113,25 @@ class MMMTrainer:
         )
         logger.info(model_config)
         model = GPT2LMHeadModel(model_config)
+        # Performerのモデル構築
+        """model = PerformerLM(
+            num_tokens=10000,
+            dim=512,
+            depth=6,
+            heads=8,
+            causal=True,
+            max_seq_len=8192
+        )
+        model_config = LongformerConfig(
+            attention_window=512,
+            pad_token_id=tokenizer.token_to_id("[PAD]"),
+            max_position_embeddings=self.config.pad_length,  # 最大シーケンス長
+        )"""
+        # Longformerのマスク付き言語モデル
+        #model = LongformerForMaskedLM(model_config)
+        #model = DataParallel(model, device_ids=[0, 1])
+        #model = model.cuda()
+        #model = LEDForConditionalGeneration(model_config)
 
         # Prepare the training dataset.
         print("Preparing training dataset...")
@@ -95,7 +141,6 @@ class MMMTrainer:
             block_size=self.config.pad_length,
             simulate=simulate
         )
-        print(dataset_train)
         logger.info("Training dataset prepared.")
 
         # Prepare the validation dataset.
@@ -121,6 +166,7 @@ class MMMTrainer:
             output_dir=os.path.join(output_path),
             overwrite_output_dir=True,
             evaluation_strategy="steps",
+            eval_steps=1000,
             num_train_epochs=self.config.epochs,
             per_gpu_train_batch_size=self.config.batch_size,
             save_steps=1_000,
@@ -129,16 +175,25 @@ class MMMTrainer:
             logging_strategy="steps",
             logging_dir=os.path.join(output_path, "logs"),
             load_best_model_at_end=True,
-            save_strategy="steps"
+            save_strategy="steps",
         )
         trainer = Trainer(
             model=model,
             args=training_args,
             data_collator=data_collator,
             train_dataset=dataset_train,
-            eval_dataset=dataset_valid
+            eval_dataset=dataset_valid,
+            callbacks=[GradientAndLossCallback(output_dir=output_path)]
         )
+        # データローダーのバッチ確認
+        for batch in trainer.get_train_dataloader():
+            print(batch)
+            break
 
+        # メモリ管理設定
+        #torch.cuda.empty_cache()  # GPU メモリのキャッシュをクリア
+        #torch.cuda.set_per_process_memory_fraction(1.0)  # メモリ使用量の上限を設定
+        
         # Train the model.
         logger.info("Training the model...")
         trainer.train()
